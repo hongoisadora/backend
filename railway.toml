@@ -1,0 +1,13 @@
+# railway.toml — Deploy no Railway com cron job a cada 1 hora
+[build]
+builder = "nixpacks"
+buildCommand = "pip install -r requirements.txt"
+
+[deploy]
+startCommand = "python monitor.py"
+healthcheckPath = "/"
+restartPolicyType = "on_failure"
+
+[[cron]]
+schedule = "0 * * * *"   # A cada hora, no minuto zero
+command = "python monitor.py"
