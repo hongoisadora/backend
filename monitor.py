@@ -1,11 +1,8 @@
 """
-BCB Pix Normativas Monitor v2
+BCB Pix Normativas Monitor v3
 ===============================
 Monitora resoluções do Banco Central relacionadas ao Pix
 e envia alertas via WhatsApp usando Twilio + resumo via Claude AI.
-
-Estratégia: faz scraping da página de busca do BCB filtrada por
-"Resolução BCB" + "Pix", detecta novos números e notifica.
 """
 
 import os
@@ -34,9 +31,11 @@ TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM", "whatsapp:+1415523
 WHATSAPP_TO          = os.environ["WHATSAPP_TO"]
 ANTHROPIC_API_KEY    = os.environ["ANTHROPIC_API_KEY"]
 
+# Se FORCE_RESET=true, ignora o histórico e reprocessa tudo (modo de teste)
+FORCE_RESET = os.environ.get("FORCE_RESET", "false").lower() == "true"
+
 STATE_FILE = Path("state.json")
 
-# URL de busca no portal BCB — filtra por Resolução BCB com texto "Pix"
 BCB_BUSCA_URL = (
     "https://www.bcb.gov.br/estabilidadefinanceira/normativos"
     "?tipo=Resolucao+BCB&assunto=Pix&formato=Lista&pagina=1"
@@ -44,10 +43,32 @@ BCB_BUSCA_URL = (
 BCB_NORMATIVO_BASE = "https://www.bcb.gov.br/estabilidadefinanceira/exibenormativo"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; PixMonitor/2.0)",
+    "User-Agent": "Mozilla/5.0 (compatible; PixMonitor/3.0)",
     "Accept": "text/html,application/xhtml+xml",
     "Accept-Language": "pt-BR,pt;q=0.9",
 }
+
+# Resoluções BCB conhecidas sobre Pix — usadas como fallback no FORCE_RESET
+NORMATIVOS_CONHECIDOS = [
+    {
+        "id": "ResolucaoBCB-407",
+        "tipo": "Resolução BCB",
+        "numero": "407",
+        "titulo": "Altera o Regulamento Pix para implementar o Pix Automático",
+        "data_publicacao": "2024-08-02",
+        "url": f"{BCB_NORMATIVO_BASE}?tipo=Resolu%C3%A7%C3%A3o+BCB&numero=407",
+        "ementa": "Implementa o Pix Automático como modalidade de débito recorrente.",
+    },
+    {
+        "id": "ResolucaoBCB-403",
+        "tipo": "Resolução BCB",
+        "numero": "403",
+        "titulo": "Aprimora mecanismos de segurança e gerenciamento de risco de fraude no Pix",
+        "data_publicacao": "2024-07-22",
+        "url": f"{BCB_NORMATIVO_BASE}?tipo=Resolu%C3%A7%C3%A3o+BCB&numero=403",
+        "ementa": "Exige solução antifraude com detecção de transações atípicas.",
+    },
+]
 
 
 # ── Estado persistente ────────────────────────────────────────────────────────
@@ -63,31 +84,22 @@ def save_state(state: dict):
 
 # ── Scraping do portal BCB ────────────────────────────────────────────────────
 async def fetch_latest_normativos() -> list[dict]:
-    """
-    Faz scraping da página de normativos do BCB filtrando por Pix.
-    Retorna lista de dicts com dados de cada normativo encontrado.
-    """
     async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
         resp = await client.get(BCB_BUSCA_URL, headers=HEADERS)
         resp.raise_for_status()
 
     soup = BeautifulSoup(resp.text, "html.parser")
     normativos = []
-
-    # O portal BCB lista normativos em tabelas ou cards — tentamos ambos
-    # Padrão 1: tabela com links para normativos
     rows = soup.select("table tbody tr") or soup.select(".normativo-item")
 
-    for row in rows[:20]:  # Pega os 20 mais recentes
+    for row in rows[:20]:
         try:
             link = row.find("a", href=True)
             if not link:
                 continue
-
             href = link.get("href", "")
             texto = link.get_text(strip=True)
 
-            # Extrai número da resolução do href ou texto
             numero_match = re.search(r"numero[=\-/](\d+)", href, re.IGNORECASE)
             if not numero_match:
                 numero_match = re.search(r"n[ºo°]?\s*(\d+)", texto, re.IGNORECASE)
@@ -95,14 +107,9 @@ async def fetch_latest_normativos() -> list[dict]:
                 continue
 
             numero = numero_match.group(1)
-
-            # Data de publicação
             data_cell = row.find("td", class_=re.compile("data|date", re.I))
             data = data_cell.get_text(strip=True) if data_cell else ""
-
-            # Título/ementa
             titulo = texto[:200] if texto else f"Resolução BCB nº {numero}"
-
             url = href if href.startswith("http") else f"https://www.bcb.gov.br{href}"
 
             normativos.append({
@@ -118,41 +125,32 @@ async def fetch_latest_normativos() -> list[dict]:
             log.debug(f"Erro parseando linha: {e}")
             continue
 
-    # Se o scraping não retornou resultados, usa estratégia alternativa:
-    # varre números sequencialmente a partir do último visto
     if not normativos:
-        log.info("Scraping HTML falhou, usando estratégia de varredura sequencial")
+        log.info("Scraping HTML sem resultados, usando varredura sequencial")
         normativos = await check_sequential_normativos()
 
     return normativos
 
 
 async def check_sequential_normativos() -> list[dict]:
-    """
-    Estratégia alternativa: verifica se existem Resoluções BCB com números
-    maiores que o último registrado, fazendo HEAD requests para confirmar.
-    """
     state = load_state()
     seen_ids = state.get("seen_ids", [])
 
-    # Descobre o maior número já visto
     numeros_vistos = []
     for sid in seen_ids:
         m = re.search(r"(\d+)$", sid)
         if m:
             numeros_vistos.append(int(m.group(1)))
 
-    ultimo_numero = max(numeros_vistos) if numeros_vistos else 429  # última conhecida
+    ultimo_numero = max(numeros_vistos) if numeros_vistos else 429
 
     normativos = []
     async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-        # Verifica os próximos 5 números após o último visto
         for num in range(ultimo_numero + 1, ultimo_numero + 6):
             url = f"{BCB_NORMATIVO_BASE}?tipo=Resolu%C3%A7%C3%A3o+BCB&numero={num}"
             try:
                 resp = await client.head(url, headers=HEADERS)
                 if resp.status_code == 200:
-                    # Existe! Busca o título fazendo GET
                     resp_get = await client.get(url, headers=HEADERS)
                     titulo = f"Resolução BCB nº {num}"
                     soup = BeautifulSoup(resp_get.text, "html.parser")
@@ -177,7 +175,6 @@ async def check_sequential_normativos() -> list[dict]:
 
 
 async def fetch_normativo_texto(url: str) -> str:
-    """Extrai o texto completo do normativo para o resumo da IA."""
     try:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
             resp = await client.get(url, headers=HEADERS)
@@ -185,8 +182,7 @@ async def fetch_normativo_texto(url: str) -> str:
         soup = BeautifulSoup(resp.text, "html.parser")
         for tag in soup(["script", "style", "nav", "header", "footer"]):
             tag.decompose()
-        text = soup.get_text(separator="\n", strip=True)
-        return text[:6000]
+        return soup.get_text(separator="\n", strip=True)[:6000]
     except Exception as e:
         log.warning(f"Não foi possível extrair texto completo: {e}")
         return ""
@@ -258,12 +254,19 @@ _PixMonitor · Atualização automática_"""
 
 # ── Fluxo principal ───────────────────────────────────────────────────────────
 async def run():
-    log.info("=== BCB Pix Monitor v2 iniciando ===")
-    state = load_state()
-    seen_ids: list = state.get("seen_ids", [])
+    log.info("=== BCB Pix Monitor v3 iniciando ===")
 
-    normativos = await fetch_latest_normativos()
-    log.info(f"Encontrados {len(normativos)} normativos na consulta")
+    if FORCE_RESET:
+        log.info("⚠️  FORCE_RESET ativado — modo de teste, ignorando histórico")
+        seen_ids = []
+        # No modo de teste usa normativos conhecidos para garantir envio
+        normativos = NORMATIVOS_CONHECIDOS[:1]  # Envia só 1 para não spammar
+    else:
+        state = load_state()
+        seen_ids = state.get("seen_ids", [])
+        normativos = await fetch_latest_normativos()
+
+    log.info(f"Encontrados {len(normativos)} normativos")
 
     novos = [n for n in normativos if n["id"] not in seen_ids]
     log.info(f"{len(novos)} novos normativos a processar")
@@ -281,10 +284,13 @@ async def run():
         except Exception as e:
             log.error(f"Erro processando {normativo['id']}: {e}", exc_info=True)
 
-    state["seen_ids"] = seen_ids[-500:]
-    state["last_check"] = datetime.now(timezone.utc).isoformat()
-    save_state(state)
-    log.info("=== Monitor v2 finalizado ===")
+    if not FORCE_RESET:
+        state = load_state()
+        state["seen_ids"] = seen_ids[-500:]
+        state["last_check"] = datetime.now(timezone.utc).isoformat()
+        save_state(state)
+
+    log.info("=== Monitor v3 finalizado ===")
 
 
 if __name__ == "__main__":
