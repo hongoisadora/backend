@@ -226,7 +226,7 @@ Seja objetivo, técnico e direto."""
 
     message = client.messages.create(
         model="claude-opus-4-6",
-        max_tokens=700,
+        max_tokens=400,
         messages=[{"role": "user", "content": prompt}]
     )
     return message.content[0].text
@@ -234,6 +234,7 @@ Seja objetivo, técnico e direto."""
 
 # ── Envio WhatsApp ─────────────────────────────────────────────────────────────
 def enviar_whatsapp(mensagem: str):
+    mensagem = mensagem[:1500]  # Twilio limite de 1600 chars
     client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
     msg = client.messages.create(
         from_=TWILIO_WHATSAPP_FROM,
