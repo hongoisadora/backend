@@ -25,14 +25,19 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-TWILIO_ACCOUNT_SID   = os.environ["TWILIO_ACCOUNT_SID"]
-TWILIO_AUTH_TOKEN    = os.environ["TWILIO_AUTH_TOKEN"]
+TWILIO_ACCOUNT_SID   = os.environ["TWILIO_ACCOUNT_SID"].strip()
+TWILIO_AUTH_TOKEN    = os.environ["TWILIO_AUTH_TOKEN"].strip()
 TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
-WHATSAPP_TO          = os.environ["WHATSAPP_TO"]
-ANTHROPIC_API_KEY    = os.environ["ANTHROPIC_API_KEY"]
+WHATSAPP_TO          = os.environ["WHATSAPP_TO"].strip()
+ANTHROPIC_API_KEY    = os.environ["ANTHROPIC_API_KEY"].strip()
 
 # Se FORCE_RESET=true, ignora o histórico e reprocessa tudo (modo de teste)
 FORCE_RESET = os.environ.get("FORCE_RESET", "false").lower() == "true"
+
+# Diagnóstico — mostra exatamente o que está sendo usado
+import sys
+print(f"[DIAG] WHATSAPP_TO='{WHATSAPP_TO}' len={len(WHATSAPP_TO)}", flush=True)
+print(f"[DIAG] FROM='{TWILIO_WHATSAPP_FROM}'", flush=True)
 
 STATE_FILE = Path("state.json")
 
