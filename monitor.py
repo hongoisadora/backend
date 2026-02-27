@@ -254,8 +254,7 @@ _{normativo['titulo'][:100]}_
 
 {resumo}
 
----
-_PixMonitor · Atualização automática_"""
+"""
 
 
 # ── Fluxo principal ───────────────────────────────────────────────────────────
