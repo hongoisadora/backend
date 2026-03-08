@@ -1,5 +1,5 @@
 """
-BCB Pix Normativas Monitor - versao final
+BCB Pix Normativas Monitor - v7
 """
 
 import os
@@ -27,13 +27,12 @@ ANTHROPIC_API_KEY    = os.environ["ANTHROPIC_API_KEY"].strip()
 FORCE_RESET          = os.environ.get("FORCE_RESET", "false").lower() == "true"
 
 print(f"[DIAG] WHATSAPP_TO='{WHATSAPP_TO}' len={len(WHATSAPP_TO)}", flush=True)
-print(f"[DIAG] FROM='{TWILIO_WHATSAPP_FROM}'", flush=True)
 
 STATE_FILE = Path("state.json")
 BCB_BUSCA_URL = "https://www.bcb.gov.br/estabilidadefinanceira/normativos?tipo=Resolucao+BCB&assunto=Pix&formato=Lista&pagina=1"
 BCB_NORMATIVO_BASE = "https://www.bcb.gov.br/estabilidadefinanceira/exibenormativo"
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; PixMonitor/5.0)",
+    "User-Agent": "Mozilla/5.0 (compatible; PixMonitor/7.0)",
     "Accept": "text/html,application/xhtml+xml",
     "Accept-Language": "pt-BR,pt;q=0.9",
 }
@@ -46,7 +45,6 @@ NORMATIVOS_CONHECIDOS = [
         "titulo": "Altera o Regulamento Pix para implementar o Pix Automatico",
         "data_publicacao": "2024-08-02",
         "url": BCB_NORMATIVO_BASE + "?tipo=Resolu%C3%A7%C3%A3o+BCB&numero=407",
-        "ementa": "Implementa o Pix Automatico como modalidade de debito recorrente.",
     },
 ]
 
@@ -79,7 +77,7 @@ async def fetch_latest_normativos():
             texto = link.get_text(strip=True)
             numero_match = re.search(r"numero[=\-/](\d+)", href, re.IGNORECASE)
             if not numero_match:
-                numero_match = re.search(r"n[o°]?\s*(\d+)", texto, re.IGNORECASE)
+                numero_match = re.search(r"n[o]?\s*(\d+)", texto, re.IGNORECASE)
             if not numero_match:
                 continue
             numero = numero_match.group(1)
@@ -94,7 +92,6 @@ async def fetch_latest_normativos():
                 "titulo": titulo,
                 "data_publicacao": data,
                 "url": url,
-                "ementa": titulo,
             })
         except Exception as e:
             log.debug("Erro parseando linha: " + str(e))
@@ -114,7 +111,7 @@ async def check_sequential_normativos():
         m = re.search(r"(\d+)$", sid)
         if m:
             numeros_vistos.append(int(m.group(1)))
-    ultimo_numero = max(numeros_vistos) if numeros_vistos else 434
+    ultimo_numero = max(numeros_vistos) if numeros_vistos else 439
 
     normativos = []
     async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
@@ -136,7 +133,6 @@ async def check_sequential_normativos():
                         "titulo": titulo,
                         "data_publicacao": datetime.now().strftime("%Y-%m-%d"),
                         "url": url,
-                        "ementa": titulo,
                     })
                     log.info("Nova Resolucao BCB encontrada: n " + str(num))
             except Exception as e:
@@ -153,7 +149,10 @@ async def fetch_normativo_texto(url):
         soup = BeautifulSoup(resp.text, "html.parser")
         for tag in soup(["script", "style", "nav", "header", "footer"]):
             tag.decompose()
-        return soup.get_text(separator="\n", strip=True)[:4000]
+        texto = soup.get_text(separator="\n", strip=True)
+        if len(texto) > 200:
+            return texto[:4000]
+        return ""
     except Exception as e:
         log.warning("Nao foi possivel extrair texto: " + str(e))
         return ""
@@ -161,26 +160,35 @@ async def fetch_normativo_texto(url):
 
 def gerar_resumo(normativo, texto_completo):
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    contexto = ("\n\nTexto da norma:\n" + texto_completo) if texto_completo else ("\n\nEmenta: " + normativo["ementa"])
+
+    tem_texto = len(texto_completo) > 200
+    contexto = "Texto da norma:\n" + texto_completo if tem_texto else (
+        "O texto completo nao estava disponivel. Use seu conhecimento sobre regulacao do BCB "
+        "e o titulo da resolucao para inferir o conteudo e impactos."
+    )
 
     prompt = (
-        "Voce e especialista em regulacao do sistema de pagamentos brasileiro, com foco no Pix. "
-        "Analise a normativa abaixo e produza um resumo executivo para o time de produto.\n\n"
-        "Normativo: " + normativo["tipo"] + " n " + normativo["numero"] + "\n"
-        "Titulo: " + normativo["titulo"] + "\n"
-        "Data: " + normativo["data_publicacao"] + "\n"
-        + contexto +
-        "\n\nFormato obrigatorio (maximo 250 palavras):\n"
-        "O que mudou: [1-2 frases]\n\n"
-        "Impacto para o produto:\n"
-        "- [bullet 1]\n- [bullet 2]\n- [bullet 3]\n\n"
-        "Prazo de adequacao: [data ou Nao especificado]\n\n"
-        "Link: " + normativo["url"]
+        "Voce e especialista em regulacao do sistema de pagamentos brasileiro, com foco no Pix.\n\n"
+        "Normativo: Resolucao BCB n " + normativo["numero"] + "\n"
+        "Data de publicacao: " + normativo["data_publicacao"] + "\n"
+        "Titulo: " + normativo["titulo"] + "\n\n"
+        + contexto + "\n\n"
+        "Escreva uma mensagem de WhatsApp com o seguinte formato:\n\n"
+        "Linha 1: *Resolucao BCB " + normativo["numero"] + "* (" + normativo["data_publicacao"] + ")\n"
+        "Linha 2: _[titulo curto e direto explicando o que a norma faz — ex: Disciplina os limites do Pix para reducao de fraudes]_\n\n"
+        "Em seguida, escreva 3 a 4 frases corridas resumindo o que muda, o impacto para o negocio e para o cliente final. "
+        "Use *negrito* para destacar os termos e numeros mais importantes. "
+        "O texto deve ser fluido, sem bullets, facil de ler no celular.\n\n"
+        "Na ultima linha, em negrito:\n"
+        "*Prazo de adequacao: [data ou A confirmar]*\n\n"
+        "Na linha final:\n"
+        "Detalhes: " + normativo["url"] + "\n\n"
+        "Limite total: 300 palavras. Sem introducoes ou saudacoes."
     )
 
     message = client.messages.create(
         model="claude-opus-4-6",
-        max_tokens=400,
+        max_tokens=450,
         messages=[{"role": "user", "content": prompt}]
     )
     return message.content[0].text
@@ -196,19 +204,6 @@ def enviar_whatsapp(mensagem):
     )
     log.info("WhatsApp enviado SID=" + msg.sid)
     return msg.sid
-
-
-def montar_mensagem(normativo, resumo):
-    linhas = [
-        "Nova Normativa BCB - Pix",
-        "",
-        normativo["tipo"] + " n " + normativo["numero"],
-        normativo["titulo"][:80],
-        "Publicada em: " + normativo["data_publicacao"],
-        "",
-        resumo,
-    ]
-    return "\n".join(linhas)
 
 
 async def run():
@@ -232,8 +227,7 @@ async def run():
         try:
             texto = await fetch_normativo_texto(normativo["url"])
             resumo = gerar_resumo(normativo, texto)
-            mensagem = montar_mensagem(normativo, resumo)
-            enviar_whatsapp(mensagem)
+            enviar_whatsapp(resumo)
             seen_ids.append(normativo["id"])
             log.info("Notificacao enviada: " + normativo["id"])
             await asyncio.sleep(3)
