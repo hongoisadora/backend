@@ -200,8 +200,9 @@ def gerar_mensagem(normativo, texto_completo):
         "- [acao especifica 2]\n"
         "- [acao especifica 3 se houver]\n\n"
         "*Prazo: [data concreta ou A confirmar]*\n\n"
-        "Regras: maximo 200 palavras. Sem genericos como 'adaptar processos' ou 'revisar politicas'. "
-        "Seja especifico sobre o que muda no produto, na jornada do usuario ou na integracao tecnica."
+        "IMPORTANTE: maximo 150 palavras. A mensagem DEVE caber em 1400 caracteres. "
+        "Sem genericos como adaptar processos ou revisar politicas. "
+        "Seja especifico sobre o que muda no produto, jornada do usuario ou integracao tecnica."
     )
 
     message = client.messages.create(
@@ -212,23 +213,23 @@ def gerar_mensagem(normativo, texto_completo):
     return message.content[0].text[:1400]
 
 
-def enviar_whatsapp_simples(texto):
+def _twilio_send(texto):
     client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
     msg = client.messages.create(
         from_=TWILIO_WHATSAPP_FROM,
         to=WHATSAPP_TO,
-        body=texto
+        body=texto[:1550]
     )
     log.info("WhatsApp enviado SID=" + msg.sid)
     return msg.sid
 
 
-def enviar_whatsapp(mensagem, url):
-    # Separa o conteudo do link e envia em 2 mensagens
-    corpo = mensagem[:1550]
-    enviar_whatsapp_simples(corpo)
-    asyncio.get_event_loop().run_until_complete(asyncio.sleep(1))
-    enviar_whatsapp_simples("Leia a norma completa:\n" + url)
+async def enviar_whatsapp(mensagem, url):
+    # Mensagem 1: conteudo
+    _twilio_send(mensagem)
+    await asyncio.sleep(2)
+    # Mensagem 2: link
+    _twilio_send("Leia a norma completa:\n" + url)
 
 
 async def run():
@@ -252,7 +253,7 @@ async def run():
         try:
             texto = await fetch_normativo_texto(normativo["url"])
             mensagem = gerar_mensagem(normativo, texto)
-            enviar_whatsapp(mensagem, normativo["url"])
+            await enviar_whatsapp(mensagem, normativo["url"])
             seen_ids.append(normativo["id"])
             log.info("Notificacao enviada: " + normativo["id"])
             await asyncio.sleep(3)
