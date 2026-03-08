@@ -181,7 +181,7 @@ def gerar_mensagem(normativo, texto_completo):
         )
 
     prompt = (
-        "Voce e especialista em regulacao do sistema de pagamentos brasileiro, com foco no Pix.\n\n"
+        "Voce e especialista em regulacao do sistema de pagamentos brasileiro, com foco no Pix.\n""Escreva sempre em portugues do Brasil, com pontuacao e acentuacao corretas (use virgulas, pontos e dois-pontos adequadamente).\n""Mantenha termos tecnicos em ingles sem traducao: Fintech, API, onboarding, compliance, token, sandbox, chargeback, KYC.\n\n"
         "Normativo: Resolucao BCB n " + normativo["numero"] + "\n"
         "Data: " + normativo["data_publicacao"] + "\n"
         "Titulo: " + normativo["titulo"] + "\n\n"
